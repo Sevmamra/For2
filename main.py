@@ -58,12 +58,12 @@ async def copy_message_without_forward(
 ) -> bool:
     """Copy message without forward tag"""
     try:
-        # Get the original message
-        message = await context.bot.get_messages(
+        # Get the original message (FIXED METHOD)
+        messages = await context.bot.get_messages(
             chat_id=source_chat_id,
             message_ids=[message_id]
         )
-        message = message[0] if message else None
+        message = messages[0] if messages else None
         
         if not message:
             return False
