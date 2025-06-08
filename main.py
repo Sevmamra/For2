@@ -2,15 +2,9 @@ import os
 import re
 import asyncio
 import logging
-from typing import Optional, Dict, Union
+from typing import Optional
 
-from telegram import (
-    Update,
-    Message,
-    InputMediaPhoto,
-    InputMediaVideo,
-    InputMediaDocument
-)
+from telegram import Update, Message
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -50,69 +44,19 @@ def extract_message_id(link: str) -> Optional[int]:
     return int(match.group(1)) if match else None
 
 async def copy_message_without_forward(
+    update: Update,
     context: CallbackContext,
-    source_chat_id: int,
-    message_id: int,
-    dest_chat_id: int,
-    thread_id: Optional[int] = None
+    message_id: int
 ) -> bool:
-    """Copy message without forward tag"""
+    """Copy message without forward tag using forward_message with drop_author"""
     try:
-        # Get the original message (FIXED METHOD)
-        messages = await context.bot.get_messages(
-            chat_id=source_chat_id,
-            message_ids=[message_id]
+        await context.bot.forward_message(
+            chat_id=Config.DESTINATION_GROUP_ID,
+            from_chat_id=Config.SOURCE_CHANNEL_ID,
+            message_id=message_id,
+            message_thread_id=session.current_thread_id,
+            drop_author=True  # This removes the "forwarded from" tag
         )
-        message = messages[0] if messages else None
-        
-        if not message:
-            return False
-
-        # Handle different message types
-        if message.text:
-            await context.bot.send_message(
-                chat_id=dest_chat_id,
-                text=message.text,
-                message_thread_id=thread_id,
-                entities=message.entities,
-                parse_mode=None
-            )
-        elif message.photo:
-            await context.bot.send_photo(
-                chat_id=dest_chat_id,
-                photo=message.photo[-1].file_id,
-                caption=message.caption,
-                caption_entities=message.caption_entities,
-                message_thread_id=thread_id,
-                parse_mode=None
-            )
-        elif message.video:
-            await context.bot.send_video(
-                chat_id=dest_chat_id,
-                video=message.video.file_id,
-                caption=message.caption,
-                caption_entities=message.caption_entities,
-                message_thread_id=thread_id,
-                parse_mode=None
-            )
-        elif message.document:
-            await context.bot.send_document(
-                chat_id=dest_chat_id,
-                document=message.document.file_id,
-                caption=message.caption,
-                caption_entities=message.caption_entities,
-                message_thread_id=thread_id,
-                parse_mode=None
-            )
-        elif message.sticker:
-            await context.bot.send_sticker(
-                chat_id=dest_chat_id,
-                sticker=message.sticker.file_id,
-                message_thread_id=thread_id
-            )
-        else:
-            return False
-            
         return True
     except Exception as e:
         logger.error(f"Failed to copy message {message_id}: {e}")
@@ -124,11 +68,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     welcome_msg = (
-        "🚀 *Advanced Content Forwarder Bot*\n\n"
+        "🚀 *Content Forwarder Bot*\n\n"
         "1. Use /create_topic TOPIC_NAME\n"
         "2. Send STARTING message link\n"
         "3. Send ENDING message link\n"
-        "4. Bot will copy all messages (no forward tag)"
+        "4. Bot will forward all messages (no tag)"
     )
     await update.message.reply_text(welcome_msg, parse_mode="Markdown")
 
@@ -191,64 +135,56 @@ async def handle_message_link(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         total_messages = session.end_message_id - session.start_message_id + 1
         session.progress_message = await update.message.reply_text(
-            f"⏳ Preparing to copy {total_messages} messages (no forward tag)..."
+            f"⏳ Preparing to forward {total_messages} messages..."
         )
 
-        # Start copying process
-        asyncio.create_task(
-            copy_messages(update, context)
-        )
+        # Start forwarding process
+        asyncio.create_task(forward_messages(update, context))
 
-async def copy_messages(update: Update, context: CallbackContext):
-    """Copy messages between start and end IDs without forward tag"""
+async def forward_messages(update: Update, context: CallbackContext):
+    """Forward messages between start and end IDs"""
     try:
-        copied_count = 0
+        forwarded_count = 0
         total_messages = session.end_message_id - session.start_message_id + 1
         failed_count = 0
 
         for msg_id in range(session.start_message_id, session.end_message_id + 1):
             try:
-                success = await copy_message_without_forward(
-                    context=context,
-                    source_chat_id=Config.SOURCE_CHANNEL_ID,
-                    message_id=msg_id,
-                    dest_chat_id=Config.DESTINATION_GROUP_ID,
-                    thread_id=session.current_thread_id
-                )
+                success = await copy_message_without_forward(update, context, msg_id)
                 
                 if success:
-                    copied_count += 1
+                    forwarded_count += 1
                 else:
                     failed_count += 1
 
                 # Update progress every 5 messages
-                if (copied_count + failed_count) % 5 == 0 or msg_id == session.end_message_id:
+                if (forwarded_count + failed_count) % 5 == 0 or msg_id == session.end_message_id:
                     await session.progress_message.edit_text(
-                        f"⏳ Progress: {copied_count + failed_count}/{total_messages}\n"
-                        f"✅ Copied: {copied_count}\n"
+                        f"⏳ Progress: {forwarded_count + failed_count}/{total_messages}\n"
+                        f"✅ Forwarded: {forwarded_count}\n"
                         f"❌ Failed: {failed_count}"
                     )
 
                 await asyncio.sleep(Config.DELAY_BETWEEN_FORWARDS)
 
             except Exception as e:
-                logger.warning(f"Error processing message {msg_id}: {e}")
+                logger.warning(f"Skipped message {msg_id}: {e}")
                 failed_count += 1
                 continue
 
         await context.bot.send_message(
             chat_id=update.effective_chat.id,
-            text=f"✅ Copying complete!\n\n"
+            text=f"✅ Forwarding complete!\n\n"
                  f"• Topic: {session.current_topic_name}\n"
                  f"• Total messages: {total_messages}\n"
-                 f"• Successfully copied: {copied_count}\n"
+                 f"• Successfully forwarded: {forwarded_count}\n"
                  f"• Failed: {failed_count}",
             reply_to_message_id=session.progress_message.message_id
         )
 
     except Exception as e:
-        logger.error(f"Copying process failed: {e}")
-        await update.message.reply_text("⚠️ Copying process failed")
+        logger.error(f"Forwarding process failed: {e}")
+        await update.message.reply_text("⚠️ Forwarding process failed")
     finally:
         session.reset()
 
