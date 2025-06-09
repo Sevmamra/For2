@@ -39,14 +39,14 @@ class ForwardSession:
 session = ForwardSession()
 
 def extract_message_id(link: str) -> Optional[int]:
-    """Extract message ID from Telegram link (e.g., t.me/c/123/45 → 45)"""
+    """Extract message ID from Telegram link"""
     match = re.search(r"/(\d+)$", link)
     return int(match.group(1)) if match else None
 
 async def copy_content(context: CallbackContext, message_id: int) -> bool:
-    """SMART COPY: Removes forward tags + handles all media"""
+    """Copy message content without forward tag"""
     try:
-        # Step 1: Fetch original message
+        # Fetch original message
         msg = (await context.bot.get_messages(
             chat_id=Config.SOURCE_CHANNEL_ID,
             message_ids=[message_id]
@@ -55,7 +55,7 @@ async def copy_content(context: CallbackContext, message_id: int) -> bool:
         if not msg:
             return False
 
-        # Step 2: Reconstruct and send manually (NO FORWARD TAG)
+        # Reconstruct and send message manually
         if msg.text:
             await context.bot.send_message(
                 chat_id=Config.DESTINATION_GROUP_ID,
