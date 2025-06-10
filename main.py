@@ -17,8 +17,8 @@ from config import Config
 
 # Logging setup
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=getattr(logging, Config.LOG_LEVEL)
 )
 logger = logging.getLogger(__name__)
 
@@ -39,103 +39,111 @@ class ForwardSession:
 session = ForwardSession()
 
 def extract_message_id(link: str) -> Optional[int]:
-    """Extract message ID from Telegram link"""
+    """Extract message ID from Telegram message link"""
     match = re.search(r"/(\d+)$", link)
     return int(match.group(1)) if match else None
 
 async def copy_content(context: CallbackContext, message_id: int) -> bool:
     """Copy message content without forward tag"""
     try:
-        # Fetch original message
-        msg = (await context.bot.get_messages(
-            chat_id=Config.SOURCE_CHANNEL_ID,
-            message_ids=[message_id]
-        ))[0]
-
-        if not msg:
-            return False
-
-        # Reconstruct and send message manually
-        if msg.text:
-            await context.bot.send_message(
+        # First try forwarding with drop_author (works in newer versions)
+        try:
+            await context.bot.forward_message(
                 chat_id=Config.DESTINATION_GROUP_ID,
-                text=msg.text,
+                from_chat_id=Config.SOURCE_CHANNEL_ID,
+                message_id=message_id,
                 message_thread_id=session.current_thread_id,
-                entities=msg.entities,
-                parse_mode=None
+                drop_author=True  # This removes forward tag
             )
-        elif msg.photo:
-            await context.bot.send_photo(
-                chat_id=Config.DESTINATION_GROUP_ID,
-                photo=msg.photo[-1].file_id,
-                caption=msg.caption,
-                caption_entities=msg.caption_entities,
-                message_thread_id=session.current_thread_id,
-                parse_mode=None
+            return True
+        except Exception as e:
+            logger.warning(f"Forward with drop_author failed, trying manual copy: {e}")
+            
+            # Fallback to manual copy if forward fails
+            msg = await context.bot.get_message(
+                chat_id=Config.SOURCE_CHANNEL_ID,
+                message_id=message_id
             )
-        elif msg.video:
-            await context.bot.send_video(
-                chat_id=Config.DESTINATION_GROUP_ID,
-                video=msg.video.file_id,
-                caption=msg.caption,
-                caption_entities=msg.caption_entities,
-                message_thread_id=session.current_thread_id,
-                parse_mode=None
-            )
-        elif msg.document:
-            await context.bot.send_document(
-                chat_id=Config.DESTINATION_GROUP_ID,
-                document=msg.document.file_id,
-                caption=msg.caption,
-                caption_entities=msg.caption_entities,
-                message_thread_id=session.current_thread_id,
-                parse_mode=None
-            )
-        elif msg.sticker:
-            await context.bot.send_sticker(
-                chat_id=Config.DESTINATION_GROUP_ID,
-                sticker=msg.sticker.file_id,
-                message_thread_id=session.current_thread_id
-            )
-        else:
-            return False
-        return True
+            
+            if msg.text:
+                await context.bot.send_message(
+                    chat_id=Config.DESTINATION_GROUP_ID,
+                    text=msg.text,
+                    message_thread_id=session.current_thread_id,
+                    entities=msg.entities,
+                    parse_mode=None
+                )
+            elif msg.photo:
+                await context.bot.send_photo(
+                    chat_id=Config.DESTINATION_GROUP_ID,
+                    photo=msg.photo[-1].file_id,
+                    caption=msg.caption,
+                    caption_entities=msg.caption_entities,
+                    message_thread_id=session.current_thread_id,
+                    parse_mode=None
+                )
+            elif msg.video:
+                await context.bot.send_video(
+                    chat_id=Config.DESTINATION_GROUP_ID,
+                    video=msg.video.file_id,
+                    caption=msg.caption,
+                    caption_entities=msg.caption_entities,
+                    message_thread_id=session.current_thread_id,
+                    parse_mode=None
+                )
+            elif msg.document:
+                await context.bot.send_document(
+                    chat_id=Config.DESTINATION_GROUP_ID,
+                    document=msg.document.file_id,
+                    caption=msg.caption,
+                    caption_entities=msg.caption_entities,
+                    message_thread_id=session.current_thread_id,
+                    parse_mode=None
+                )
+            return True
+            
     except Exception as e:
         logger.error(f"Failed to copy message {message_id}: {e}")
         return False
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Send welcome message"""
     if not session.validate_user(update.message.from_user.id):
         return
-    await update.message.reply_text(
-        "🚀 *Content Copier Bot*\n\n"
-        "1. /create_topic TOPIC_NAME\n"
-        "2. Send START link\n"
-        "3. Send END link\n"
-        "4. Bot copies ALL messages (NO FORWARD TAGS)",
-        parse_mode="Markdown"
+    
+    welcome_msg = (
+        "🚀 *Content Forwarder Bot*\n\n"
+        "1. Use /create_topic TOPIC_NAME\n"
+        "2. Send STARTING message link\n"
+        "3. Send ENDING message link\n"
+        "4. Bot will forward all messages (no tags)"
     )
+    await update.message.reply_text(welcome_msg, parse_mode="Markdown")
 
 async def create_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /create_topic command"""
     if not session.validate_user(update.message.from_user.id):
         await update.message.reply_text("❌ Unauthorized")
         return
+
     if not context.args:
         await update.message.reply_text("Usage: /create_topic TOPIC_NAME")
         return
 
     session.reset()
-    session.current_topic_name = " ".join(context.args)
+    session.current_topic_name = ' '.join(context.args)
 
     try:
+        # Create forum topic in destination group
         result = await context.bot.create_forum_topic(
             chat_id=Config.DESTINATION_GROUP_ID,
             name=session.current_topic_name
         )
         session.current_thread_id = result.message_thread_id
+        
         await update.message.reply_text(
-            f"✅ Topic '{session.current_topic_name}' created!\n"
-            "Now send STARTING message link:"
+            f"✅ Topic '{session.current_topic_name}' created!\n\n"
+            "Now send the STARTING message link from channel:"
         )
     except Exception as e:
         logger.error(f"Topic creation failed: {e}")
@@ -143,73 +151,96 @@ async def create_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
         session.reset()
 
 async def handle_message_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Process message links for start/end points"""
     if not session.validate_user(update.message.from_user.id):
         return
+
     if not session.current_thread_id:
         await update.message.reply_text("⚠️ First create a topic with /create_topic")
         return
 
     message_id = extract_message_id(update.message.text)
     if not message_id:
-        await update.message.reply_text("❌ Invalid link. Send proper Telegram message link.")
+        await update.message.reply_text("❌ Invalid link format. Send a proper Telegram message link.")
         return
 
     if not session.start_message_id:
         session.start_message_id = message_id
-        await update.message.reply_text("🔗 Got START link! Now send END link:")
+        await update.message.reply_text(
+            "🔗 Got STARTING link!\n"
+            "Now send the ENDING message link from channel:"
+        )
     elif not session.end_message_id:
         session.end_message_id = message_id
         if session.end_message_id < session.start_message_id:
-            await update.message.reply_text("❌ END link must come after START link!")
+            await update.message.reply_text("❌ Ending link must come after starting link!")
             session.reset()
             return
 
-        total = session.end_message_id - session.start_message_id + 1
-        session.progress_message = await update.message.reply_text(f"⏳ Copying {total} messages...")
+        total_messages = session.end_message_id - session.start_message_id + 1
+        session.progress_message = await update.message.reply_text(
+            f"⏳ Preparing to forward {total_messages} messages..."
+        )
+
+        # Start forwarding process
         asyncio.create_task(process_messages(update, context))
 
 async def process_messages(update: Update, context: CallbackContext):
+    """Process all messages between start and end IDs"""
     try:
-        success = failed = 0
-        total = session.end_message_id - session.start_message_id + 1
+        success_count = 0
+        total_messages = session.end_message_id - session.start_message_id + 1
+        failed_count = 0
 
         for msg_id in range(session.start_message_id, session.end_message_id + 1):
             try:
                 if await copy_content(context, msg_id):
-                    success += 1
+                    success_count += 1
                 else:
-                    failed += 1
+                    failed_count += 1
 
-                if (success + failed) % 5 == 0 or msg_id == session.end_message_id:
+                # Update progress every 5 messages
+                if (success_count + failed_count) % 5 == 0 or msg_id == session.end_message_id:
                     await session.progress_message.edit_text(
-                        f"⏳ Progress: {success + failed}/{total}\n"
-                        f"✅ Copied: {success}\n"
-                        f"❌ Failed: {failed}"
+                        f"⏳ Progress: {success_count + failed_count}/{total_messages}\n"
+                        f"✅ Success: {success_count}\n"
+                        f"❌ Failed: {failed_count}"
                     )
+
                 await asyncio.sleep(Config.DELAY_BETWEEN_FORWARDS)
+
             except Exception as e:
                 logger.warning(f"Skipped message {msg_id}: {e}")
-                failed += 1
+                failed_count += 1
+                continue
 
-        await update.message.reply_text(
-            f"✅ Done!\n\n"
-            f"Topic: {session.current_topic_name}\n"
-            f"Total: {total}\n"
-            f"Success: {success}\n"
-            f"Failed: {failed}"
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=f"✅ Process complete!\n\n"
+                 f"• Topic: {session.current_topic_name}\n"
+                 f"• Total messages: {total_messages}\n"
+                 f"• Successfully processed: {success_count}\n"
+                 f"• Failed: {failed_count}",
+            reply_to_message_id=session.progress_message.message_id
         )
+
     except Exception as e:
-        logger.error(f"Process failed: {e}")
-        await update.message.reply_text("⚠️ Process failed")
+        logger.error(f"Processing failed: {e}")
+        await update.message.reply_text("⚠️ Processing failed")
     finally:
         session.reset()
 
 def main():
+    """Start the bot"""
     Config.validate()
-    app = ApplicationBuilder().token(Config.TOKEN).build()
     
+    app = ApplicationBuilder().token(Config.TOKEN).build()
+
+    # Command handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler(["create_topic", "createtopic"], create_topic))
+
+    # Message link handler
     app.add_handler(MessageHandler(
         filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND,
         handle_message_link
