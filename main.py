@@ -44,29 +44,34 @@ def extract_message_id(link: str) -> Optional[int]:
     return int(match.group(1)) if match else None
 
 async def copy_content(context: CallbackContext, message_id: int) -> bool:
-    """Copy message content without forward tag"""
+    """Universal content copier that works with python-telegram-bot v20.x"""
     try:
-        # First try forwarding with drop_author (works in newer versions)
+        # First try simple forwarding (works for most content)
         try:
             await context.bot.forward_message(
                 chat_id=Config.DESTINATION_GROUP_ID,
                 from_chat_id=Config.SOURCE_CHANNEL_ID,
                 message_id=message_id,
-                message_thread_id=session.current_thread_id,
-                drop_author=True  # This removes forward tag
+                message_thread_id=session.current_thread_id
             )
             return True
         except Exception as e:
-            logger.warning(f"Forward with drop_author failed, trying manual copy: {e}")
+            logger.warning(f"Forward failed, trying manual copy: {e}")
             
             # Fallback to manual copy if forward fails
-            msg = await context.bot.get_message(
+            # Note: In v20.x, we need to use client.get_messages() instead of bot.get_message()
+            client = context.bot
+            msg = await client.get_messages(
                 chat_id=Config.SOURCE_CHANNEL_ID,
-                message_id=message_id
+                message_ids=[message_id]
             )
+            msg = msg[0] if msg else None
             
+            if not msg:
+                return False
+
             if msg.text:
-                await context.bot.send_message(
+                await client.send_message(
                     chat_id=Config.DESTINATION_GROUP_ID,
                     text=msg.text,
                     message_thread_id=session.current_thread_id,
@@ -74,7 +79,7 @@ async def copy_content(context: CallbackContext, message_id: int) -> bool:
                     parse_mode=None
                 )
             elif msg.photo:
-                await context.bot.send_photo(
+                await client.send_photo(
                     chat_id=Config.DESTINATION_GROUP_ID,
                     photo=msg.photo[-1].file_id,
                     caption=msg.caption,
@@ -83,7 +88,7 @@ async def copy_content(context: CallbackContext, message_id: int) -> bool:
                     parse_mode=None
                 )
             elif msg.video:
-                await context.bot.send_video(
+                await client.send_video(
                     chat_id=Config.DESTINATION_GROUP_ID,
                     video=msg.video.file_id,
                     caption=msg.caption,
@@ -92,7 +97,7 @@ async def copy_content(context: CallbackContext, message_id: int) -> bool:
                     parse_mode=None
                 )
             elif msg.document:
-                await context.bot.send_document(
+                await client.send_document(
                     chat_id=Config.DESTINATION_GROUP_ID,
                     document=msg.document.file_id,
                     caption=msg.caption,
@@ -116,7 +121,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "1. Use /create_topic TOPIC_NAME\n"
         "2. Send STARTING message link\n"
         "3. Send ENDING message link\n"
-        "4. Bot will forward all messages (no tags)"
+        "4. Bot will forward all messages"
     )
     await update.message.reply_text(welcome_msg, parse_mode="Markdown")
 
